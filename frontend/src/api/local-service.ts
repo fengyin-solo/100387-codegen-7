@@ -3,7 +3,7 @@ import { allRows, listRows, resetRows, saveRows } from '@/data/local-store'
 import type { ActionResult, EntryRow, ModuleMeta, OverviewResult, PageResult } from '@/data/types'
 
 // 会写进数据的「往回走」动作：命中就把这条记录标成异常态，看板上能一眼看出来。
-const NEGATIVE_ACTIONS = ['撤销', '作废', '拒绝', '驳回', '停用', '忽略', '下线', '回滚']
+const NEGATIVE_ACTIONS = ['撤销', '作废', '拒绝', '驳回', '停用', '忽略', '下线', '回滚', '退回']
 
 export function moduleMeta(key: string): ModuleMeta {
   const meta = MODULE_BY_KEY.get(key)
@@ -11,6 +11,18 @@ export function moduleMeta(key: string): ModuleMeta {
     throw new Error(`没有登记名为 ${key} 的业务模块`)
   }
   return meta
+}
+
+// 当前状态下可执行的动作：模块登记了 allowedFrom 就按源状态白名单过滤。
+export function allowedActions(meta: ModuleMeta, status: string): string[] {
+  const allowedFrom = meta.allowedFrom
+  if (!allowedFrom) {
+    return meta.actions
+  }
+  return meta.actions.filter((action) => {
+    const sources = allowedFrom[action]
+    return !sources || sources.includes(status)
+  })
 }
 
 export function filterRows(rows: EntryRow[], filters: Record<string, string>): EntryRow[] {
@@ -43,11 +55,21 @@ export function runAction(key: string, id: number, action: string): ActionResult
   if (current === target) {
     return { ok: false, message: `${meta.entity}已经是「${target}」，不用重复操作` }
   }
+  // 严格状态机：只允许在登记的源状态上推进，杜绝跳级和回退到待送检。
+  const sources = meta.allowedFrom?.[action]
+  if (sources && !sources.includes(current)) {
+    return {
+      ok: false,
+      message: `${meta.entity}当前为「${current}」，不能执行「${action}」到「${target}」，请按 ${sources.join('、')} 的顺序逐级推进`,
+    }
+  }
   const lastStatus = meta.statuses[meta.statuses.length - 1]
+  // 登记了严格状态机的模块以「已归档」为终态；已退回仍需重新送检，继续算待处理。
+  const done = meta.allowedFrom ? target === '已归档' : target === lastStatus
   const updated: EntryRow = {
     ...rows[index],
     status: target,
-    pending: target !== lastStatus,
+    pending: !done,
     abnormal: NEGATIVE_ACTIONS.some((verb) => action.startsWith(verb)),
   }
   const next = [...rows]
